@@ -13,8 +13,8 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
 
-//#include <llvm/Bitcode/BitcodeWriter.h>
-#include <llvm/Bitcode/ReaderWriter.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+//#include <llvm/Bitcode/ReaderWriter.h>
 
 #include <llvm/Support/FileSystem.h>
 #include <llvm/IR/Argument.h>
@@ -23,6 +23,12 @@
 
 namespace AST
 {
+
+struct CompilationFlags
+{
+	bool isModule = false;
+	std::string moduleName;
+};
 
 class SourceLocation
 {
@@ -1250,6 +1256,8 @@ public:
 	
 	void preprocess()
 	{
+		// Ugly?
+		static std::unordered_map<std::string, bool> visitedFiles;
 		for(size_t i = 0;  i < TopLevel.size(); i++)
 		{
 			auto& k = TopLevel[i];
@@ -1274,12 +1282,23 @@ public:
 					std::string currname = SourceName;
 					SourceName = filename->getValue();
 					
-					std::shared_ptr<Module> module = IncludeCallback(SourcePath + filename->getValue());
+					std::string filepath = SourcePath + filename->getValue();
+					
+					if(visitedFiles[filepath])
+					{
+						SourceName = currname;
+						warning("ignored redundant include of " + filename->getValue(), SourceLocation());
+						continue;
+					}
+					
+					visitedFiles[filepath] = true;
+					
+					std::shared_ptr<Module> module = IncludeCallback(filepath);
 					
 					if(!module)
 					{
 						SourceName = currname;
-						error("could not include file '" + SourcePath + filename->getValue() + "'", SourceLocation());
+						error("could not include file '" + filepath + "'", SourceLocation());
 						exit(1);
 						break;
 					}
