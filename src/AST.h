@@ -20,6 +20,10 @@
 #include <llvm/IR/Argument.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Linker/Linker.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/LegacyPassNameParser.h>
+#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+#include <llvm/Transforms/IPO.h>
 
 namespace AST
 {
@@ -28,6 +32,9 @@ struct CompilationFlags
 {
 	bool isModule = false;
 	std::string moduleName;
+	
+	std::string output;
+	std::string input;
 };
 
 class SourceLocation
@@ -236,10 +243,13 @@ class VariableDef : public Expr
 	std::string Type;
 	std::shared_ptr<Expr> Initial;
 	unsigned int Size; // Array size
+    bool Extern;
 public:
 	VariableDef(const std::string& name, const std::string& type, std::shared_ptr<Expr> initial, unsigned int size = 0) 
-		: Name(name), Type(type), Initial(initial), Size(size) {}
-	
+		: Name(name), Type(type), Initial(initial), Size(size), Extern(false) {}
+
+	void setExtern(bool b) { Extern = b; }
+	bool getExtern() const { return Extern; }
 	std::string getName() const { return Name; }
 	std::string getType() const { return Type; }
 	unsigned int getSize() const { return Size; }
@@ -248,7 +258,7 @@ public:
 	
 	std::string getDefinitionString() override
 	{
-		return "local " + Name + " -> " + Type + (Size > 0 ? "[" + std::to_string(Size) + "]" : "") + "\n";
+		return "extern local " + Name + " -> " + Type + (Size > 0 ? "[" + std::to_string(Size) + "]" : "") + "\n";
 	}
 };
 
@@ -261,9 +271,10 @@ class Function : public Expr
 	std::vector<std::shared_ptr<Expr>> Args;
 	
 	bool Variadic;
+	bool IsMember;
 public:
 	Function(const std::string& name, const std::string& ret, bool ext = false) 
-		: Name(name), ReturnType(ret), Extern(ext), Variadic(false) {}
+		: Name(name), ReturnType(ret), Extern(ext), Variadic(false), IsMember(false) {}
 	
 	void dump() override
 	{
@@ -276,11 +287,13 @@ public:
 		for(auto& k : Body)
 			k->dump();
 	}
-	
+
 	bool getVariadic() const { return Variadic; }
 	void setVariadic(bool value) { Variadic = value; }
 	
 	bool getExtern() const { return Extern; }
+	bool isMember() const { return IsMember; }
+	void setMember(bool value) { IsMember = value; }
 	
 	const std::string getName() const { return Name; }
 	const std::string getReturnType() const { return ReturnType; }
@@ -290,17 +303,24 @@ public:
 	void setName(const std::string& name) { Name = name; }
 	std::string getDefinitionString() override
 	{
-		if(Extern)
-			return "";
+		//if(Extern)
+		//	return "";
 		
 		std::stringstream ss;
-		ss << "function " << Name << "(";
-		for(auto& k : Args)
+		ss << "extern function " << Name << "(";
+
+		// First argument is always self when in a class
+		size_t i = (IsMember ? 1 : 0);
+		for(; i < Args.size(); i++)
 		{
+			auto& k = Args[i];
 			VariableDef* v = static_cast<VariableDef*>(k.get());
 			ss << v->getType() << " " << v->getName() << (k != Args.back() ? ", " : "");
 		}
-		
+
+		if(Variadic)
+			ss << ", ...";
+
 		ss << ") -> " << ReturnType << "\n";
 		return ss.str();
 	}
@@ -474,6 +494,7 @@ public:
 
 class Module
 {
+	std::vector<std::string> RequiredLibraries;
 	std::vector<std::shared_ptr<Expr>> TopLevel;
 	
 	struct LocalScope
@@ -506,6 +527,7 @@ class Module
 		}
 		
 		Scope& current() { return *LocalVariables.back(); }
+		bool isTopLevel() { return LocalVariables.size() == 0; }
 	};
 	
 	inline llvm::Value* var2val(llvm::IRBuilder<>& builder, llvm::Value* v)
@@ -531,6 +553,14 @@ public:
 	void setSourceName(const std::string& name) { SourceName = name; }
 	void setSourcePath(const std::string& name) { SourcePath = name; }
 	
+	std::string getRequiredLibraries()
+	{
+		std::stringstream ss;
+		for(auto& k : RequiredLibraries)
+			ss << k << " ";
+		return ss.str();
+	}
+	
 	void addExpr(const std::shared_ptr<Expr>& expr)
 	{
 		TopLevel.push_back(expr);
@@ -547,10 +577,27 @@ public:
 			std::vector<llvm::Type*> args;
 			
 			for(auto& p : function->getArgs())
-				args.push_back(getType(builder, dynamic_cast<VariableDef*>(p.get())->getType(), module));
-			
+			{
+				llvm::Type* type = getType(builder, dynamic_cast<VariableDef*>(p.get())->getType(), module);
+
+				if(!type)
+				{
+					error("invalid argument type '" + function->getReturnType() + "'", p->getLocation());
+					return nullptr;
+				}
+
+				args.push_back(type);
+			}
+
 			llvm::ArrayRef<llvm::Type*>  argsRef(args);
-			llvm::FunctionType* funcType = getFunctionTypeFromName(builder, module, function->getReturnType(), function->getVariadic(), argsRef);
+			llvm::Type* type = getType(builder, function->getReturnType(), module);
+			if(!type)
+			{
+				error("invalid return type '" + function->getReturnType() + "'", function->getLocation());
+				return nullptr;
+			}
+
+			llvm::FunctionType* funcType = llvm::FunctionType::get(type, argsRef, function->getVariadic());
 			llvm::Function* llvmFunction = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, function->getName(), module);
 			
 			if(!function->getExtern())
@@ -589,7 +636,7 @@ public:
 			if(!left || !right)
 				return nullptr;
 			
-			if(binop->getOp().size() == 1)			
+			if(binop->getOp().size() == 1)
 				switch(binop->getOp()[0])
 				{
 					case '+':
@@ -681,10 +728,10 @@ public:
 					
 					if(right->getType()->isPointerTy())
 						right = builder.CreatePtrToInt(right, builder.getInt32Ty(), "right_ptr_to_int");
-					
-					module->dump();
-					error("comparison expected '" 
-								+ type2str(left->getType()->getPointerElementType())
+
+					if(left->getType() != right->getType())
+						error("comparison expected '"
+								+ type2str(left->getType())
 								+ "' but got '" + type2str(right->getType()) + "'",
 								binop->getLocation());
 					
@@ -725,16 +772,21 @@ public:
 			
 			if(retval == nullptr)
 			{
-				llvm::Function* function = module->getFunction(getOperatorName(binop->getOp(),
-												type2str(left->getType()),
-												type2str(right->getType())));
+				const std::string leftStr = type2str(left->getType());
+				const std::string rightStr = type2str(right->getType());
+
+				llvm::Function* function = module->getFunction(getOperatorName(binop->getOp(), leftStr, rightStr));
 
 				if(!function)
-					llvm::report_fatal_error("Could not find fitting operator implementation!");
+				{
+					error("operator '" + binop->getOp() + "' is undefined for types '"
+							  + leftStr + "' and '" + rightStr + "'", binop->getLocation());
+					return nullptr;
+				}
 
 				std::vector<llvm::Value*> args;
-				args.push_back(var2val(builder, left));
-				args.push_back(var2val(builder, right));
+				args.push_back(left);
+				args.push_back(right);
 
 				llvm::ArrayRef<llvm::Value*> argRef(args);
 				retval = builder.CreateCall(function, argRef, "call");
@@ -797,6 +849,8 @@ public:
 		{
 			scope.exit();
 			llvm::Value* v = scope.find(var->getName());
+			if(!v)
+				v = module->getNamedGlobal(var->getName());
 			
 			if(!v)
 			{
@@ -870,26 +924,76 @@ public:
 				var = field;
 			}
 			
-			return builder.CreateLoad(v);
+			return builder.CreateLoad(v, var->getName());
 		}
 		
 		if(auto var = dynamic_cast<VariableDef*>(k.get()))
 		{
 			// Variable needs to be visible to the parent scope
 			scope.exit();
-			if(scope.current().find(var->getName()) != scope.current().end())
+			if(!scope.isTopLevel() && scope.current().find(var->getName()) != scope.current().end())
+			{
 				error("variable name collision", var->getLocation());
+				return nullptr;
+			}
+
+			if(scope.isTopLevel() && var->getExtern())
+			{
+				if(var->getInitial())
+				{
+					error("extern declarations can not be initialized", var->getInitial()->getLocation());
+					return nullptr;
+				}
+
+				if(module->getNamedGlobal(var->getName()))
+				{
+					error("variable name collision", var->getLocation());
+					return nullptr;
+				}
+
+				llvm::Type* type = getType(builder, var->getType(), module);
+				if (var->getSize() > 0)
+					type = llvm::ArrayType::get(type, var->getSize());
+
+				llvm::GlobalVariable* global = static_cast<llvm::GlobalVariable*>(module->getOrInsertGlobal(var->getName(), type));
+				global->setLinkage(llvm::GlobalValue::ExternalLinkage);
+				return global;
+			}
 
 			// Auto type
 			if(var->getInitial() && var->getType().empty())
 			{
 				llvm::Value* initial = generateIr(var->getInitial(), scope, builder, module);
 				if(!initial) return nullptr;
-				
-				llvm::Value* llvmVar = builder.CreateAlloca(initial->getType(), 0, var->getName());
-				
-				scope.current()[var->getName()] = llvmVar;
-				return builder.CreateStore(initial, llvmVar, "var_init");
+
+				// For local variables
+				if(!scope.isTopLevel())
+				{
+					llvm::Value* llvmVar = builder.CreateAlloca(initial->getType(), 0, var->getName());
+
+					scope.current()[var->getName()] = llvmVar;
+					return builder.CreateStore(initial, llvmVar, "var_init");
+				}
+				else // For global variables
+				{
+					if(module->getNamedGlobal(var->getName()))
+					{
+						error("variable name collision", var->getLocation());
+						return nullptr;
+					}
+
+					llvm::Constant* constant;
+					if((constant = llvm::dyn_cast<llvm::Constant>(initial)) == nullptr)
+					{
+						error("initializers for global variables need to be constants", var->getInitial()->getLocation());
+					}
+
+					llvm::GlobalVariable* global = static_cast<llvm::GlobalVariable*>(module->getOrInsertGlobal(var->getName(), initial->getType()));
+					global->setInitializer(constant);
+
+					global->setLinkage(llvm::GlobalValue::CommonLinkage);
+					return global;
+				}
 			}
 			else
 			{
@@ -901,16 +1005,48 @@ public:
 				if(initial && initial->getType() != type)
 				{
 					error("variable type mismatch, expected " + type2str(type) + " but got " + type2str(initial->getType()), var->getInitial()->getLocation());
+					return nullptr;
 				}
-				
-				llvm::Value* llvmVar = nullptr;
-				if(var->getSize() == 0)
+
+				if (var->getSize() > 0)
+					type = llvm::ArrayType::get(type, var->getSize());
+
+				// For local variables
+				if(!scope.isTopLevel())
+				{
+					llvm::Value* llvmVar = nullptr;
 					llvmVar = builder.CreateAlloca(type, 0, var->getName());
-				else
-					llvmVar = builder.CreateAlloca(llvm::ArrayType::get(type, var->getSize()), 0, var->getName());
-				
-				scope.current()[var->getName()] = llvmVar;
-				return (initial ? builder.CreateStore(initial, llvmVar, "var_init_typed") : llvmVar);
+					scope.current()[var->getName()] = llvmVar;
+					return (initial ? builder.CreateStore(initial, llvmVar, "var_init_typed") : llvmVar);
+				}
+				else // For global variables
+				{
+					if(module->getNamedGlobal(var->getName()))
+					{
+						error("variable name collision", var->getLocation());
+						return nullptr;
+					}
+
+					llvm::Constant* constant = nullptr;
+					llvm::GlobalVariable* global = static_cast<llvm::GlobalVariable*>(module->getOrInsertGlobal(var->getName(), type));
+
+					if(initial && (constant = llvm::dyn_cast<llvm::Constant>(initial)) == nullptr)
+					{
+						error("initializers for global variables need to be constants", var->getInitial()->getLocation());
+						return nullptr;
+					}
+
+					if(constant)
+					{
+						global->setInitializer(constant);
+					}
+					else
+						global->setInitializer(llvm::ConstantAggregateZero::get(type));
+
+					global->setLinkage(llvm::GlobalValue::CommonLinkage);
+
+					return global;
+				}
 			}
 
 			error("could not define variable", var->getLocation());
@@ -1125,7 +1261,7 @@ public:
 			llvm::Value* retval = generateIr(ret->getValue(), scope, builder, module);
 			if(!retval) return nullptr;
 			
-			auto value = builder.CreateRet(var2val(builder, retval));
+			auto value = builder.CreateRet(retval);
 			scope.exit();
 			return value;
 		}
@@ -1196,7 +1332,10 @@ public:
 			llvm::ArrayRef<llvm::Value*> argsRef(args);
 			
 			scope.exit();
-			return builder.CreateCall(calleeFunc, argsRef);
+			if(!calleeFunc->getFunctionType()->getReturnType()->isVoidTy())
+				return builder.CreateCall(calleeFunc, argsRef, "call");
+			else
+				return builder.CreateCall(calleeFunc, argsRef);
 		}
 		
 		scope.exit();
@@ -1231,7 +1370,7 @@ public:
 		//WriteBitcodeToFile(module, out);
 		//out.flush();
 
-		module->print(out, nullptr, true, true);
+		module->print(out, nullptr, false, true);
 		
 		if(ErrorCount > 0)
 		{
@@ -1264,7 +1403,7 @@ public:
 			if(auto call = dynamic_cast<FunctionCall*>(k.get()))
 			{
 				// Handle include
-				if(call->getName() == "include")
+				if(call->getName() == "include" || call->getName() == "require")
 				{
 					if(call->getArgs().size() != 1)
 					{
@@ -1282,7 +1421,12 @@ public:
 					std::string currname = SourceName;
 					SourceName = filename->getValue();
 					
-					std::string filepath = SourcePath + filename->getValue();
+					std::string filepath = (SourceName[0] != '/' ? SourcePath : "") + filename->getValue();
+					if(call->getName() == "require")
+					{
+						RequiredLibraries.push_back(filepath + ".ll");
+						filepath += ".lmod";
+					}
 					
 					if(visitedFiles[filepath])
 					{
@@ -1319,6 +1463,7 @@ public:
 					auto function = std::dynamic_pointer_cast<Function>(k);
 					if(function)
 					{
+						function->setMember(true);
 						classdef->getMethods().push_back(function);
 						continue;
 					}
@@ -1362,10 +1507,33 @@ public:
 		
 		return "unknown";
 	}
-	
+
+	std::string normalizeName(const std::string& name)
+	{
+		std::stringstream ss;
+		for(auto c : name)
+		{
+			switch(c)
+			{
+				case '@': ss << "_At_"; break;
+				case '<': ss << "_Smaller_"; break;
+				case '>': ss << "_Greater_"; break;
+				case '=': ss << "_Equal_"; break;
+				case '+': ss << "_Plus_"; break;
+				case '-': ss << "_Minus_"; break;
+				case '*': ss << "_Times_"; break;
+				case '/': ss << "_Divided_"; break;
+
+				default:
+					ss << c;
+			}
+		}
+		return ss.str();
+	}
+
 	std::string getOperatorName(const std::string& op, const std::string& argL, const std::string& argR)
 	{
-		return op + "_" + argL + "_" + argR;
+		return normalizeName("Operator_" + op + "_" + argL + "_" + argR);
 	}
 	
 	Function* findFunction(const std::string& name)
@@ -1378,7 +1546,8 @@ public:
 	
 	llvm::FunctionType* getFunctionTypeFromName(llvm::IRBuilder<>& builder, llvm::Module* module, const std::string& name, bool vararg, llvm::ArrayRef<llvm::Type*> args = nullptr)
 	{
-		return llvm::FunctionType::get(getType(builder, name, module), args, vararg);
+		llvm::Type* type = getType(builder, name, module);
+		return llvm::FunctionType::get(type, args, vararg);
 	}
 	
 	llvm::Type* getType(llvm::IRBuilder<>& builder, const std::string& name, llvm::Module* module = nullptr)

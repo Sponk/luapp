@@ -109,10 +109,14 @@ std::shared_ptr<AST::Module> ast = std::make_shared<AST::Module>();
 %type <exprList> variabledef
 %type <sval> pointermarklist
 %type <sval> pointermark
-%type <sval> operatorname
 
+%nonassoc Then
+%nonassoc Elseif
+%nonassoc Else
+
+%left Operator
 %left '<' '>' '=' EQ NEQ GEQ LEQ
-%left '+' '-' Operator
+%left '+' '-'
 %left '*' '/'
 %right '$' '@'
 
@@ -147,7 +151,7 @@ stat:
 					delete $2;
 					delete $4;
 				}
-		| varlist operatorname explist 
+		| varlist Operator explist
 		{
 			$$ = new ExprList;
 
@@ -269,30 +273,32 @@ stat:
 					delete $3;
 				}
 
-		|		OperatorDef Name Name operatorname Name Name ArrowRight pointermark Name block End
+		|		OperatorDef pointermark Name Name Operator pointermark Name Name ArrowRight pointermark Name block End
 				{
 					$$ = new ExprList;
 					std::shared_ptr<AST::Function> function;
 					$$->push_back(function = std::make_shared<AST::Function>(
-									  ast->getOperatorName(*$4, *$2, *$5), *$8 + *$9));
+									  ast->getOperatorName(*$5, *$2 + *$3, *$6 + *$7), *$10 + *$11));
 
 					function->setLocation(makeSourceLoc(&@1));
-					for (auto& k : *$10)
+					for (auto& k : *$12)
 						function->getBody().push_back(k);
 
 					function->getArgs().push_back(
-						std::make_shared<AST::VariableDef>(*$3, *$2, nullptr));
+						std::make_shared<AST::VariableDef>(*$4, *$2 + *$3, nullptr));
 					function->getArgs().push_back(
-						std::make_shared<AST::VariableDef>(*$6, *$5, nullptr));
+						std::make_shared<AST::VariableDef>(*$8, *$6 + *$7, nullptr));
 
 					delete $2;
-					delete $3;
-					delete $5;
 					delete $6;
+					delete $3;
 					delete $4;
+					delete $7;
 					delete $8;
-					delete $9;
+					delete $5;
 					delete $10;
+					delete $11;
+					delete $12;
 				}
 				
 		| Extern Function funcname '(' parlist ')' ArrowRight pointermark Name
@@ -448,6 +454,26 @@ variabledef
 	delete $5;
 }
 
+| Extern Local varlist ArrowRight pointermark Name
+{
+	$$ = new ExprList;
+
+	// FIXME: Check sizes!
+	for(unsigned int i = 0; i < $3->size(); i++)
+	{
+		auto variable = std::dynamic_pointer_cast<AST::Variable>((*$3)[i]);
+		std::shared_ptr<AST::VariableDef> def = std::make_shared<AST::VariableDef>(variable->getName(), *$5 + *$6, nullptr);
+		def->setLocation(makeSourceLoc(&@1));
+		def->setExtern(true);
+
+		$$->push_back(def);
+	}
+
+	delete $3;
+	delete $5;
+	delete $6;
+}
+
 // Arrays
 | Local varlist '=' explist ArrowRight pointermark Name '[' Integer ']'
 {
@@ -527,7 +553,7 @@ pointermarklist: '@' { $$ = new std::string("@"); }
 		;
 
 // namelist:		Name | namelist ',' Name
-		;
+		//;
 
 explist:	exp { $$ = new ExprList; $$->push_back(std::shared_ptr<AST::Expr>($1)); } 
 		| explist ',' exp
@@ -537,22 +563,10 @@ explist:	exp { $$ = new ExprList; $$->push_back(std::shared_ptr<AST::Expr>($1));
 		}
 		;
 
-operatorname: 
-'+' { $$ = new std::string("+"); }
-| '-' { $$ = new std::string("-"); }
-| '/' { $$ = new std::string("/"); }
-| '*' { $$ = new std::string("*"); }
-| '=' { $$ = new std::string("="); }
-| '<' { $$ = new std::string("<"); }
-| '>' { $$ = new std::string(">"); }
-| '~' { $$ = new std::string("~"); }
-| Operator { $$ = $1; }
-| operatorname operatorname { $$ = $1; *$$ += *$2; delete $2; }
-;
-		
 exp:	'(' exp ')' { $$ = $2; }
 		| 		'@' exp { $$ = new AST::UnaryOp(std::shared_ptr<AST::Expr>($2), "@"); $$->setLocation(makeSourceLoc(&@1));}
 		| 		'$' exp { $$ = new AST::UnaryOp(std::shared_ptr<AST::Expr>($2), "$"); $$->setLocation(makeSourceLoc(&@1));}
+		| 		exp Operator exp { $$ = new AST::BinaryOp(std::shared_ptr<AST::Expr>($1), std::shared_ptr<AST::Expr>($3), *$2); $$->setLocation(makeSourceLoc(&@2)); }
 		| 		exp '+' exp { $$ = new AST::BinaryOp(std::shared_ptr<AST::Expr>($1), std::shared_ptr<AST::Expr>($3), "+"); $$->setLocation(makeSourceLoc(&@2)); }
 		| 		exp '-' exp { $$ = new AST::BinaryOp(std::shared_ptr<AST::Expr>($1), std::shared_ptr<AST::Expr>($3), "-"); $$->setLocation(makeSourceLoc(&@2)); }
 		| 		exp '*' exp { $$ = new AST::BinaryOp(std::shared_ptr<AST::Expr>($1), std::shared_ptr<AST::Expr>($3), "*"); $$->setLocation(makeSourceLoc(&@2)); }
@@ -579,8 +593,7 @@ exp:	'(' exp ')' { $$ = $2; }
 					delete $2;
 					delete $3;
 				}
-		| 		exp operatorname exp { $$ = new AST::BinaryOp(std::shared_ptr<AST::Expr>($1), std::shared_ptr<AST::Expr>($3), *$2); $$->setLocation(makeSourceLoc(&@2)); }
-		| 		functioncall 
+		| 		functioncall
 				{
 					auto call = new AST::FunctionCall($1->Type, $1->IsMethod);
 					$$ = call;
@@ -589,7 +602,7 @@ exp:	'(' exp ')' { $$ = $2; }
 					
 					$$->setLocation(makeSourceLoc(&@1)); 
 				}
-		| 		operatorname exp 
+		| 		Operator exp
 				{ 
 					$$ = new AST::UnaryOp(std::shared_ptr<AST::Expr>($2), *$1); 
 					delete $1; 
@@ -682,7 +695,7 @@ extern int yylex_destroy(void*);
 extern void yyset_in(FILE*, void*);
 extern FILE* yyget_in(void*);
 
-int parse(const std::string& file, void* scanner)
+int parse(const std::string& file, void* scanner, const AST::CompilationFlags& flags)
 {
 	std::string path = file;
 	if(file[0] == '/')
@@ -744,14 +757,17 @@ int parse(const std::string& file, void* scanner)
 	
 	fname.erase(fname.find_last_of('.'));
 	
-	ast->writeLlvm(fname + ".ll");
+	ast->writeLlvm(fname + ".raw.ll");
 	ast->writeModule(fname + ".lmod");
-	
-	system(("clang -Wno-override-module " + fname + ".ll -o " + fname).c_str());	
+
+	system(("opt -S -O3 " + fname + ".raw.ll -o " + fname + ".ll ").c_str());
+
+	if(!flags.isModule)
+		system(("clang -O3 -march=native -Wno-override-module " + ast->getRequiredLibraries() + " " + fname + ".ll -o " + fname).c_str());
 	return 0;
 }
 
-int parse(FILE *fp, const char* file)
+int parse(FILE *fp, const AST::CompilationFlags& flags)
 {
 	ast->setIncludeCallback([] (const std::string& file) -> std::shared_ptr<AST::Module> {
 		FILE* fp = fopen(file.c_str(), "r");
@@ -779,7 +795,7 @@ int parse(FILE *fp, const char* file)
 	yylex_init(&scanner);
 	yyset_in(fp, scanner);
 	
-	int retval = parse(file, scanner);
+	int retval = parse(flags.input, scanner, flags);
 	yylex_destroy(scanner);
 
 	return retval;

@@ -68,7 +68,7 @@
 
 "'"."'" { yylval->cval = yytext[1]; return Char; }
 L?\"(\\.|[^\\"])*\" { yylval->sval = new std::string(yytext + 1); yylval->sval->erase(yylval->sval->length() - 1); return LiteralString; }
-[§%&?#\|^€]* { yylval->sval = new std::string(yytext); return Operator; }
+[\*/\-\+=><][\*/\-\+=><]+|[§%&?#\|^€]* { yylval->sval = new std::string(yytext); return Operator; }
 
 [a-zA-Z][a-zA-Z0-9_]* { yylval->sval = new std::string(yytext); return Name; }
 
