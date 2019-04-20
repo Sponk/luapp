@@ -1,0 +1,34 @@
+-- Bridge to the libc stdio.h contents
+
+extern local stdout -> @byte
+extern local stdin -> @byte
+extern local stderr -> @byte
+
+extern function clearerr(@byte stream) -> void
+extern function ctermid(@byte input) -> @byte
+extern function fclose(@byte stream) -> int
+extern function feof(@byte stream) -> int
+extern function ferror(@byte stream) -> int
+extern function fflush(@byte stream) -> int
+extern function fgetc(@byte stream) -> int
+extern function fgets(@byte buffer, int size, @byte stream) -> @byte
+extern function fileno(@byte stream) -> int
+extern function flockfile(@byte stream) -> void
+extern function fopen(@byte path, @byte mode) -> @byte
+extern function fprintf(@byte stream, @byte format, ...) -> int
+extern function fputc(int c, @byte stream) -> int
+extern function fputs(@byte str, @byte stream) -> int
+extern function fread(@byte buf, int size, int count, @byte stream) -> int
+extern function fscanf(@byte stream, @byte format, ...) -> int
+extern function fwrite(@byte buf, int size, int count, @byte stream) -> int
+
+extern function getc() -> int
+extern function gets(@byte buffer) -> @byte
+extern function putc(int c, @byte stream) -> int
+extern function puts(@byte str) -> int
+extern function printf(string fmt, ...) -> int
+extern function getchar() -> int
+extern function perror(@byte msg) -> void
+extern function scanf(@byte fmt, ...) -> int
+extern function tmpfile() -> @byte
+

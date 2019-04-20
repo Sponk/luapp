@@ -50,6 +50,8 @@
 "for" return For;
 "extern" return Extern;
 
+"meta" { return Meta; }
+
 "nil" return Nil;
 "true" { yylval->bval = true; return Bool; }
 "false" { yylval->bval = false; return Bool; }

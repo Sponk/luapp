@@ -1,0 +1,28 @@
+
+class OutStream {
+	local stream -> @byte
+	function setStream(@byte s) -> void
+		self.stream = s
+	end
+
+	function put(@byte str) -> void
+		fputs(str, self.stream)
+	end
+
+	function putn(int n) -> void
+		fprintf(self.stream, "%d", n)
+	end
+}
+
+operator @OutStream stream << @byte str -> @OutStream
+	stream:put(str)
+	return stream
+end
+
+operator @OutStream stream << int n -> @OutStream
+	stream:putn(n)
+	return stream
+end
+
+local cout -> OutStream
+

@@ -1,0 +1,58 @@
+require("runtime")
+
+function fib(int n) -> int
+	if n == 0 then 
+		return 0
+	elseif n == 1 then
+		return 1
+	end
+	
+	return fib(n - 1) + fib(n - 2)
+end
+
+operator int a ** int b -> int
+	local result = 1
+	for i = 0, i < b, i = i + 1 do
+		result = result * a
+	end
+	return result
+end
+
+class Test
+{
+	local k -> int
+
+	function Test() -> void
+		self.k = 48
+	end
+}
+
+meta
+	for i = 0, 10, 1 do
+		print(i)
+	end
+end
+
+function F(int a) -> void
+
+end
+
+function B(float a) -> void
+
+end
+
+function main(int argc, @@byte argv) -> int
+
+	local t -> Test
+
+	cout:setStream(stdout)
+	@cout << "TEST\n"
+	for i = 0, i < 47, i = i + 1 do
+		@cout << "fib(" << i  << ") = " << fib(i) << "\n"
+	end
+	
+	local suite -> TestSuite
+	assert(argc > 1, "STUFF!")
+
+	return 1 + <int> 0.5
+end

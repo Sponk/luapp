@@ -23,6 +23,7 @@ extern char *yytext;
 #define YYERROR_VERBOSE
 
 #include <AST.h>
+#include <SemanticChecker.h>
 
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -50,6 +51,7 @@ std::shared_ptr<AST::Module> ast = std::make_shared<AST::Module>();
 	int ival;
 	AST::Expr* expr;
 	AST::Variable* var;
+	AST::FunctionCall* call;
 	bool bval;
 	char cval;
 }
@@ -91,12 +93,14 @@ std::shared_ptr<AST::Module> ast = std::make_shared<AST::Module>();
 %token ThreeDot "..."
 
 %token Class "class"
+%token Meta "meta"
 
 %type <sval> funcname
 %type <functionBody> funcbody
 %type <exprList> block
 %type <exprList> stat
-%type <functionBody> functioncall
+%type <exprList> statlist
+%type <expr> functioncall
 %type <exprList> varlist
 %type <exprList> explist
 %type <exprList> args
@@ -131,11 +135,15 @@ chunk: block
 };
 
 block:		{ $$ = new ExprList; }
-		| stat { $$ = $1; }
-		| block stat { $$ = $1; $$->insert($$->end(), $2->begin(), $2->end()); delete $2; } 
+		// | stat { $$ = $1; }
+		// | block stat { $$ = $1; $$->insert($$->end(), $2->begin(), $2->end()); delete $2; }
+		| statlist { $$ = $1; }
 		//| retstat { $$ = $1; }
 		;
 
+statlist:	stat { $$ = $1; }
+		| statlist stat { $$ = $1; $$->insert($$->end(), $2->begin(), $2->end()); delete $2; }
+		;
 stat:
 		//stat { $$ = $1; $$->insert($$->end(), $2->begin(), $2->end()); delete $2; } 
 		/*|*/ ';' { $$ = new ExprList; }
@@ -352,19 +360,26 @@ stat:
 		//|       	Local Function funcname funcbody
 		//|		Local namelist
 		| variabledef { $$ = $1; }
-				| Return exp
-				{
-					$$ = new ExprList;
-					$$->push_back(std::make_shared<AST::Return>(std::shared_ptr<AST::Expr>($2)));
-				}
-				
-				| Return
-				{
-					$$ = new ExprList;
-					$$->push_back(std::make_shared<AST::Return>(nullptr));
-					$$->back()->setLocation(makeSourceLoc(&@1));
-				}
-				;
+		| Return exp
+		{
+			$$ = new ExprList;
+			$$->push_back(std::make_shared<AST::Return>(std::shared_ptr<AST::Expr>($2)));
+		}
+
+		| Return
+		{
+			$$ = new ExprList;
+			$$->push_back(std::make_shared<AST::Return>(nullptr));
+			$$->back()->setLocation(makeSourceLoc(&@1));
+		}
+		| Meta statlist End // '{' statlist '}'
+		{
+			$$ = new ExprList;
+                	$$->push_back(std::make_shared<AST::Meta>(std::move(*$2)));
+                	$$->back()->setLocation(makeSourceLoc(&@1));
+                	delete $2;
+		}
+		;
 
 elseif: Elseif exp Then block
 	{
@@ -521,7 +536,7 @@ funcname: Name { $$ = $1; }
 		//|		funcname ':' funcname { *$1 += ":" + *$3; $$ = $1; delete $3; }
 				;
 
-varlist: var 
+varlist: var
 	{ 
 		$$ = new ExprList;
 		$$->push_back(std::shared_ptr<AST::Expr>($1));
@@ -531,21 +546,21 @@ varlist: var
 	;
 
 var: Name { $$ = new AST::Variable(*$1, nullptr); delete $1; $$->setLocation(makeSourceLoc(&@1)); }
-		//| 	prefixexp '[' exp ']' 
-		| 		var '.' Name
-				{
-					$$ = $1;
-					AST::Variable* var = $1;
-					
-					// Search last in linked list
-					while(var->getField())
-						var = var->getField().get();
-					
-					var->setField(std::make_shared<AST::Variable>(*$3, nullptr));
-					delete $3;
-					var->getField()->setLocation(makeSourceLoc(&@3));
-				}
-		;
+	//| 	prefixexp '[' exp ']'
+	| var '.' Name
+	{
+		$$ = $1;
+		AST::Variable* var = $1;
+
+		// Search last in linked list
+		while(var->getField())
+			var = var->getField().get();
+
+		var->setField(std::make_shared<AST::Variable>(*$3, nullptr));
+		delete $3;
+		var->getField()->setLocation(makeSourceLoc(&@3));
+	}
+	;
 		
 pointermark: { $$ = new std::string(); } | pointermarklist { $$ = $1; }
 pointermarklist: '@' { $$ = new std::string("@"); }
@@ -590,16 +605,19 @@ exp:	'(' exp ')' { $$ = $2; }
 		|		'<' pointermark Name '>' exp
 				{
 					$$ = new AST::TypeCast(*$2 + *$3, std::shared_ptr<AST::Expr>($5));
+					$$->setLocation(makeSourceLoc(&@5));
+
 					delete $2;
 					delete $3;
 				}
 		| 		functioncall
 				{
-					auto call = new AST::FunctionCall($1->Type, $1->IsMethod);
-					$$ = call;
-					call->getArgs() = *$1->Args;
-					delete $1;
-					
+					//auto call = $1; // new AST::FunctionCall($1->Type, $1->IsMethod);
+					//$$ = call;
+					//call->getArgs() = *$1->Args;
+					//delete $1;
+
+					$$ = $1;
 					$$->setLocation(makeSourceLoc(&@1)); 
 				}
 		| 		Operator exp
@@ -617,25 +635,38 @@ functioncall:	//prefixexp args
 		//| prefixexp ':' Name args
 		Name args 
 		{
-			$$ = new FunctionBody;
-			$$->Type = *$1;
-			$$->Args = $2;
+			AST::FunctionCall* call;
+			$$ = call = new AST::FunctionCall(*$1);
+			call->getArgs() = std::move(*$2);
 			delete $1;
 			//delete $2;
 		}
 		| var ':' Name args
 		{
-			$$ = new FunctionBody;
-			$$->Type = *$3;
-			$$->Args = $4;
+			AST::FunctionCall* call;
+			$$ = call = new AST::FunctionCall(*$3, true);
+			call->getArgs() = std::move(*$4);
 			
-			std::reverse($$->Args->begin(), $$->Args->end());
-			$$->Args->push_back(std::shared_ptr<AST::Expr>($1));
-			std::reverse($$->Args->begin(), $$->Args->end());
-			
-			$$->IsMethod = true;
-			
+			std::reverse(call->getArgs().begin(), call->getArgs().end());
+			call->getArgs().push_back(std::shared_ptr<AST::Expr>($1));
+			std::reverse(call->getArgs().begin(), call->getArgs().end());
+
 			delete $3;
+		}
+		| var '.' Name args
+		{
+			$$ = $1;
+			AST::Variable* var = $1;
+
+			// Search last in linked list
+			while(var->getField())
+				var = var->getField().get();
+
+			auto call = new AST::FunctionCall(*$3);
+			call->getArgs() = std::move(*$4);
+			delete $3;
+
+			var->setFunctionCall(std::shared_ptr<AST::FunctionCall>(call));
 		}
 		;
 
@@ -756,19 +787,23 @@ int parse(const std::string& file, void* scanner, const AST::CompilationFlags& f
 		fname = file;
 	
 	fname.erase(fname.find_last_of('.'));
-	
-	ast->writeLlvm(fname + ".raw.ll");
-	ast->writeModule(fname + ".lmod");
 
-	system(("opt -S -O3 " + fname + ".raw.ll -o " + fname + ".ll ").c_str());
+	SemanticChecker checker;
+	checker.check(*ast);
+
+	ast->writeLlvm(flags.output + ".raw.ll");
+	ast->writeModule(flags.output + ".lmod");
+
+	system(("opt -S -O3 " + flags.output + ".raw.ll -o " + flags.output + ".ll ").c_str());
 
 	if(!flags.isModule)
-		system(("clang -O3 -march=native -Wno-override-module " + ast->getRequiredLibraries() + " " + fname + ".ll -o " + fname).c_str());
+		system(("clang -O3 -march=native -Wno-override-module " + ast->getRequiredLibraries() + " " + flags.output + ".ll -o " + flags.output).c_str());
 	return 0;
 }
 
 int parse(FILE *fp, const AST::CompilationFlags& flags)
 {
+	ast->setFlags(flags);
 	ast->setIncludeCallback([] (const std::string& file) -> std::shared_ptr<AST::Module> {
 		FILE* fp = fopen(file.c_str(), "r");
 		if(!fp)
@@ -777,7 +812,8 @@ int parse(FILE *fp, const AST::CompilationFlags& flags)
 		std::shared_ptr<AST::Module> oldAst = ast;
 		std::shared_ptr<AST::Module> newAst = std::make_shared<AST::Module>();
 		ast = newAst;
-		
+		ast->setFlags(oldAst->getFlags());
+
 		void* scanner;
 		yylex_init(&scanner);
 		yyset_in(fp, scanner);

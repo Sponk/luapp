@@ -1,0 +1,14 @@
+include("stdlib.lpp")
+include("Streams.lpp")
+
+function assert(bool value, @byte msg) -> void
+	if value == false then
+		@cout << "Assertion failed: " << msg << "\n"
+		exit(1)
+	end
+end
+
+class TestSuite {
+	
+}
+

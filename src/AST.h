@@ -9,6 +9,9 @@
 #include <unordered_map>
 #include <sstream>
 
+#include "Util.h"
+#include "MetaContext.h"
+
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -25,6 +28,9 @@
 #include <llvm/Transforms/IPO/PassManagerBuilder.h>
 #include <llvm/Transforms/IPO.h>
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace AST
 {
 
@@ -35,6 +41,7 @@ struct CompilationFlags
 	
 	std::string output;
 	std::string input;
+	std::string includePath;
 };
 
 class SourceLocation
@@ -71,6 +78,9 @@ public:
 	{
 		return "";
 	}
+
+	virtual std::string toLua() const { return "-- Expr\n"; }
+	virtual std::string getType() const { return "void"; }
 	
 	SourceLocation getLocation() { return Location; }
 	void setLocation(const SourceLocation& loc) { Location = loc; }
@@ -84,7 +94,7 @@ public:
 	TypeCast(const std::string& type, const std::shared_ptr<Expr>& value)
 		: Type(type), Value(value) {}
 		
-	std::string getType() { return Type; }
+	std::string getType() const override { return Type; }
 	std::shared_ptr<Expr> getValue() { return Value; }
 };
 
@@ -95,15 +105,19 @@ public:
 	Number(float value) : Value(value) {}
 	float getValue() const { return Value; }
 	void dump() override { std::cout << "Number: " << Value << std::endl; }
+	std::string getType() const override { return "float"; }
+	std::string toLua() const override { return std::to_string(Value); }
 };
 
 class Integer : public Expr
 {
-	float Value;
+	int Value;
 public:
 	Integer(int value) : Value(value) {}
 	int getValue() const { return Value; }
 	void dump() override { std::cout << "Integer: " << Value << std::endl; }
+	std::string getType() const override { return "int"; }
+	std::string toLua() const override { return std::to_string(Value); }
 };
 
 class Bool : public Expr
@@ -113,6 +127,8 @@ public:
 	Bool(bool value) : Value(value) {}
 	bool getValue() const { return Value; }
 	void dump() override { std::cout << "Bool: " << Value << std::endl; }
+	std::string getType() const override { return "bool"; }
+	std::string toLua() const override { return Value ? "true" : "false"; }
 };
 
 class Byte : public Expr
@@ -122,6 +138,8 @@ public:
 	Byte(char value) : Value(value) {}
 	char getValue() const { return Value; }
 	void dump() override { std::cout << "Byte: " << Value << std::endl; }
+	std::string getType() const override { return "byte"; }
+	std::string toLua() const override { return std::string("\"") + Value + "\""; }
 };
 
 class String : public Expr
@@ -132,7 +150,10 @@ public:
 	std::string getValue() const { return Value; }
 	void setValue(const std::string& value) { Value = value; }
 	void dump() override { std::cout << "String: '" << Value << "'" << std::endl; }
-	
+
+	std::string getType() const override { return "@byte"; }
+	std::string toLua() const override { return "[[" + Value + "]]"; }
+
 	void unescape()
 	{
 		std::string escaped;
@@ -161,7 +182,24 @@ class If : public Expr
 	std::vector<std::shared_ptr<Expr>> Else;
 public:
 	If(std::shared_ptr<Expr> head) : Head(head) {}
-	
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		ss << "if " << Head->toLua() << " then\n";
+		for(auto& k : Body)
+			ss << k->toLua() << "\n";
+
+		if(!Else.empty())
+		{
+			ss << "else\n";
+			for(auto& k : Else)
+				ss << k->toLua() << "\n";
+		}
+		ss << "end\n";
+		return ss.str();
+	}
+
 	void dump() override
 	{
 		std::cout << "If\n";
@@ -188,7 +226,17 @@ class While : public Expr
 	std::vector<std::shared_ptr<Expr>> Body;
 public:
 	While(std::shared_ptr<Expr> head) : Head(head) {}
-	
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		ss << "while " << Head->toLua() << " do\n";
+		for(auto& k : Body)
+			ss << k->toLua() << "\n";
+		ss << "end\n";
+		return ss.str();
+	}
+
 	void dump() override
 	{
 		std::cout << "While\n";
@@ -213,7 +261,17 @@ class For : public Expr
 public:
 	For(std::shared_ptr<Expr> init, std::shared_ptr<Expr> cond, std::shared_ptr<Expr> inc) 
 		: Init(init), Cond(cond), Inc(inc) {}
-	
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		ss << "for " << Init->toLua() << ", " << Cond->toLua() << ", " << Inc->toLua() << " do\n";
+		for(auto& k : Body)
+			ss << k->toLua() << "\n";
+		ss << "end\n";
+		return ss.str();
+	}
+
 	void dump() override
 	{
 		std::cout << "For\n";
@@ -251,11 +309,22 @@ public:
 	void setExtern(bool b) { Extern = b; }
 	bool getExtern() const { return Extern; }
 	std::string getName() const { return Name; }
-	std::string getType() const { return Type; }
+	std::string getType() const override { return Type; }
 	unsigned int getSize() const { return Size; }
 	std::shared_ptr<Expr>& getInitial() { return Initial; }
 	void dump() override { std::cout << "Variable Definition: '" << Name << "' as '" << Type << "'" << std::endl; }
-	
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		ss << (true || Extern ? "" : "local ") << Name; // FIXME: All global for meta!
+
+		if(Initial != nullptr)
+			ss << " = " << Initial->toLua();
+
+		return ss.str();
+	}
+
 	std::string getDefinitionString() override
 	{
 		return "extern local " + Name + " -> " + Type + (Size > 0 ? "[" + std::to_string(Size) + "]" : "") + "\n";
@@ -275,7 +344,32 @@ class Function : public Expr
 public:
 	Function(const std::string& name, const std::string& ret, bool ext = false) 
 		: Name(name), ReturnType(ret), Extern(ext), Variadic(false), IsMember(false) {}
-	
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		ss << "function " << Name << "(";
+
+		size_t i = (IsMember ? 1 : 0);
+		for(; i < Args.size(); i++)
+		{
+			auto& k = Args[i];
+			VariableDef* v = static_cast<VariableDef*>(k.get());
+			ss << v->getName() << (k != Args.back() ? ", " : "");
+		}
+
+		if(Variadic)
+			ss << ", ...)\n";
+		else
+			ss << ")\n";
+
+		for(auto& k : Body)
+			ss << k->toLua() << "\n";
+
+		ss << "end";
+		return ss.str();
+	}
+
 	void dump() override
 	{
 		std::cout << "Function '" << Name << "'\n";
@@ -324,6 +418,8 @@ public:
 		ss << ") -> " << ReturnType << "\n";
 		return ss.str();
 	}
+
+	std::string getType() const override { return "function"; }
 };
 
 class FunctionCall : public Expr
@@ -341,7 +437,32 @@ public:
 		for(auto& k : Args)
 			k->dump();
 	}
-	
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+
+		if(IsMethod)
+		{
+			ss << Args[0]->toLua() << ":";
+			ss << Name << "(";
+			for(unsigned int i = 1; i < Args.size(); i++)
+			{
+				auto& k = Args[i];
+				ss << k->toLua() << (i != Args.size() - 1 ? ", " : "");
+			}
+		}
+		else
+		{
+			ss << Name << "(";
+			for (auto& k : Args)
+				ss << k->toLua() << (k != Args.back() ? ", " : "");
+		}
+
+		ss << ")";
+		return ss.str();
+	}
+
 	bool isMethod() const { return IsMethod; }
 	const std::string getName() const { return Name; }
 	std::vector<std::shared_ptr<Expr>>& getArgs() { return Args; }
@@ -360,13 +481,22 @@ public:
 	std::shared_ptr<Expr>& getLeft() { return Left; }
 	std::shared_ptr<Expr>& getRight() { return Right; }
 	std::string getOp() { return Op; }
-	
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		ss << Left->toLua() << Op << Right->toLua();
+		return ss.str();
+	}
+
 	void dump() override
 	{
 		std::cout << "BinaryOp: '" << Op << "'" << std::endl;
 		Left->dump();
 		Right->dump();
 	}
+
+	std::string getType() const override { return Left->getType(); }
 };
 
 class UnaryOp : public Expr
@@ -379,12 +509,19 @@ public:
 		 
 	std::shared_ptr<Expr>& getExp() { return Exp; }
 	std::string getOp() { return Op; }
-	
+
+	std::string toLua() const override
+	{
+		return Op + Exp->toLua();
+	}
+
 	void dump() override
 	{
 		std::cout << "UnaryOp: '" << Op << "'" << std::endl;
 		Exp->dump();
 	}
+
+	std::string getType() const override { return Exp->getType(); }
 };
 
 class Return : public Expr
@@ -394,6 +531,13 @@ public:
 	Return(const std::shared_ptr<Expr>& value) : Value(value) {}
 	std::shared_ptr<Expr>& getValue() { return Value; }
 	void dump() override { std::cout << "Return" << std::endl; if(Value) Value->dump(); }
+
+	std::string toLua() const override
+	{
+		return "return " + (Value != nullptr ? Value->toLua() : "") + "\n";
+	}
+
+	std::string getType() const override { return Value == nullptr ? "void" : Value->getType(); }
 };
 
 class Variable : public Expr
@@ -401,6 +545,7 @@ class Variable : public Expr
 	std::string Name;
 	std::shared_ptr<Expr> Index;
 	std::shared_ptr<Variable> Field;
+	std::shared_ptr<AST::FunctionCall> FunctionCall; // A static function call like Module.test.func()
 public:
 	Variable(const std::string& name, std::shared_ptr<Variable> field, std::shared_ptr<Expr> index = nullptr)
 		: Name(name), Field(field), Index(index) {}
@@ -408,14 +553,34 @@ public:
 	std::shared_ptr<Expr> getIndex() const { return Index; }
 	std::shared_ptr<Variable> getField() const { return Field; }
 
-	void setField(std::shared_ptr<Variable> field) { Field = field; }	
+	void setField(std::shared_ptr<Variable> field) { Field = field; }
 	void setIndex(std::shared_ptr<Expr> idx) { Index = idx; }
-	
+	void setFunctionCall(std::shared_ptr<AST::FunctionCall> call) { FunctionCall = call; }
+
 	void dump() override 
 	{ 
 		std::cout << "Variable: '" << Name << "'[" << Index << "]" << std::endl; 
 		if(Field)
 			Field->dump();
+	}
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		ss << Name;
+
+		if(Index != nullptr && Field != nullptr)
+			ss << "[" << Index->toLua() << "]";
+
+		auto iter = this;
+		while(iter = iter->Field.get())
+			ss << "." << Field->toLua();
+
+		if(FunctionCall != nullptr)
+		{
+			ss << "." << FunctionCall->toLua();
+		}
+		return ss.str();
 	}
 };
 
@@ -426,6 +591,11 @@ public:
 	Label(const std::string& name) : Name(name) {}
 	std::string getName() const { return Name; }
 	void dump() override { std::cout << "Label: '" << Name << "'" << std::endl; }
+
+	std::string toLua() const override
+	{
+		return "::" + Name + "::\n";
+	}
 };
 
 class Goto : public Expr
@@ -435,6 +605,11 @@ public:
 	Goto(const std::string& name) : Name(name) {}
 	std::string getName() const { return Name; }
 	void dump() override { std::cout << "Goto: '" << Name << "'" << std::endl; }
+
+	std::string toLua() const override
+	{
+		return "goto ::" + Name + "::\n";
+	}
 };
 
 class ClassDef : public Expr
@@ -490,8 +665,56 @@ public:
 		ss << "}\n";
 		return ss.str();
 	}
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		ss << Name << " = {\n";
+		for(auto& k : Body)
+			ss << k->toLua() << ",\n";
+		ss << "}\n";
+		return ss.str();
+	}
 };
 
+class Meta : public Expr
+{
+	std::vector<std::shared_ptr<Expr>> Body;
+
+public:
+	Meta(std::vector<std::shared_ptr<Expr>>&& body) : Body(std::move(body)) {}
+	std::vector<std::shared_ptr<Expr>>& getBody() { return Body; }
+
+	void dump() override
+	{
+		std::cout << "Meta" << std::endl;
+		for(auto& k : Body)
+			k->dump();
+	}
+
+	std::string getDefinitionString() override
+	{
+		std::stringstream ss;
+		ss << "meta\n";
+		for(auto& k : Body)
+		{
+			ss << "\t" << k->getDefinitionString();
+		}
+		ss << "end\n";
+		return ss.str();
+	}
+
+	std::string toLua() const override
+	{
+		std::stringstream ss;
+		for(auto& k : Body)
+			ss << k->toLua() << "\n";
+
+		return ss.str();
+	}
+};
+
+#ifndef SWIG
 class Module
 {
 	std::vector<std::string> RequiredLibraries;
@@ -539,7 +762,8 @@ class Module
 	std::string SourceName;
 	std::string SourcePath;
 	unsigned int ErrorCount = 0;
-	
+	CompilationFlags Flags;
+
 	std::function<std::shared_ptr<Module>(const std::string&)> IncludeCallback = [](const std::string&) { return nullptr; };
 public:
 	void dump()
@@ -552,6 +776,8 @@ public:
 	void setIncludeCallback(const std::function<std::shared_ptr<Module>(const std::string&)>& func) { IncludeCallback = func; }
 	void setSourceName(const std::string& name) { SourceName = name; }
 	void setSourcePath(const std::string& name) { SourcePath = name; }
+	void setFlags(const CompilationFlags& flags) { Flags = flags; }
+	CompilationFlags getFlags() { return Flags; }
 	
 	std::string getRequiredLibraries()
 	{
@@ -607,7 +833,7 @@ public:
 				
 				{
 					unsigned int i = 0;
-					for(auto& param : llvmFunction->getArgumentList())
+					for(auto& param : llvmFunction->args())
 					{
 						const std::string& name = dynamic_cast<VariableDef*>(function->getArgs()[i++].get())->getName();
 						param.setName(name);
@@ -635,140 +861,153 @@ public:
 			
 			if(!left || !right)
 				return nullptr;
-			
+
 			if(binop->getOp().size() == 1)
-				switch(binop->getOp()[0])
+			{
+				switch (binop->getOp()[0])
 				{
 					case '+':
-						left = var2val(builder, left); right = var2val(builder, right);
-						if(right->getType()->isFloatingPointTy())
+						left = var2val(builder, left);
+						right = var2val(builder, right);
+						if (right->getType()->isFloatingPointTy())
 							retval = builder.CreateFAdd(left, right, "fadd");
 						else
 							retval = builder.CreateAdd(left, right, "add");
-					break;
-						
+						break;
+
 					case '-':
-						left = var2val(builder, left); right = var2val(builder, right);
-						if(right->getType()->isFloatingPointTy())
+						left = var2val(builder, left);
+						right = var2val(builder, right);
+						if (right->getType()->isFloatingPointTy())
 							retval = builder.CreateFSub(left, right, "fsub");
 						else
 							retval = builder.CreateSub(left, right, "sub");
 						break;
-						
+
 					case '*':
-						left = var2val(builder, left); right = var2val(builder, right);
-						if(right->getType()->isFloatingPointTy())
+						left = var2val(builder, left);
+						right = var2val(builder, right);
+						if (right->getType()->isFloatingPointTy())
 							retval = builder.CreateFMul(left, right, "fmul");
 						else
 							retval = builder.CreateMul(left, right, "mul");
 						break;
-						
+
 					case '/':
-						left = var2val(builder, left); right = var2val(builder, right);
-						if(left->getType()->isFloatingPointTy())
+						left = var2val(builder, left);
+						right = var2val(builder, right);
+						if (left->getType()->isFloatingPointTy())
 							retval = builder.CreateFDiv(left, right, "fdiv");
 						else
 							retval = builder.CreateExactSDiv(left, right, "div");
 						break;
-					
+
 					case '>':
-						left = var2val(builder, left); right = var2val(builder, right);
-						if(left->getType()->isFloatingPointTy())
+						left = var2val(builder, left);
+						right = var2val(builder, right);
+						if (left->getType()->isFloatingPointTy())
 							retval = builder.CreateFCmpOGT(left, right, "fcmpgt");
 						else
 							retval = builder.CreateICmpSGT(left, right, "cmpgt");
 						break;
-						
+
 					case '<':
-						left = var2val(builder, left); right = var2val(builder, right);
-						if(left->getType()->isFloatingPointTy())
+						left = var2val(builder, left);
+						right = var2val(builder, right);
+						if (left->getType()->isFloatingPointTy())
 							retval = builder.CreateFCmpOLT(left, right, "fcmplt");
 						else
 							retval = builder.CreateICmpSLT(left, right, "cmplt");
 						break;
-						
+
 					case '=':
 						/*if(llvm::isa<llvm::AllocaInst>(right))
 						{
 							right = var2val(builder, right);
 						}*/
-						
+
 						left = static_cast<llvm::LoadInst*>(left)->getPointerOperand();
-						if(!left)
+						if (!left)
 						{
 							error("left assignment operand is not a variable", binop->getLocation());
 							return nullptr;
 						}
-						
+
 						// Places have to be switched: The value is on the left and pointer on the right
-						if(left->getType()->getPointerElementType() != right->getType())
-						{	error("assignment expected '" 
-								+ type2str(left->getType()->getPointerElementType())
-								+ "' but got '" + type2str(right->getType()) + "'",
-								binop->getLocation());
+						if (left->getType()->getPointerElementType() != right->getType())
+						{
+							error("assignment expected '"
+									  + type2str(left->getType()->getPointerElementType())
+									  + "' but got '" + type2str(right->getType()) + "'",
+								  binop->getLocation());
 							//	llvm::report_fatal_error("Assignment type mismatch!");
-						
+
 							return nullptr;
 						}
-						
+
 						//left = builder.CreateGEP(left, 0);
-						if(!left->getType()->isPointerTy())
+						if (!left->getType()->isPointerTy())
 						{
 							llvm::report_fatal_error("Can only store into references!");
 						}
-						
+
 						retval = builder.CreateStore(right, left);
 						break;
 				}
+			}
 			else
-				if(binop->getOp() == "==")
+			{
+				if (binop->getOp() == "==")
 				{
-					if(left->getType()->isPointerTy())
+					if (left->getType()->isPointerTy())
 						left = builder.CreatePtrToInt(left, builder.getInt32Ty(), "left_ptr_to_int");
-					
-					if(right->getType()->isPointerTy())
+
+					if (right->getType()->isPointerTy())
 						right = builder.CreatePtrToInt(right, builder.getInt32Ty(), "right_ptr_to_int");
 
-					if(left->getType() != right->getType())
+					if (left->getType() != right->getType())
 						error("comparison expected '"
-								+ type2str(left->getType())
-								+ "' but got '" + type2str(right->getType()) + "'",
-								binop->getLocation());
-					
-					if(left->getType()->isFloatingPointTy())
+								  + type2str(left->getType())
+								  + "' but got '" + type2str(right->getType()) + "'",
+							  binop->getLocation());
+
+					if (left->getType()->isFloatingPointTy())
 						retval = builder.CreateFCmpOEQ(left, right, "fcmp");
 					else
 						retval = builder.CreateICmpEQ(left, right, "cmp");
 				}
-				else if(binop->getOp() == "<=")
+				else if (binop->getOp() == "<=")
 				{
-					left = var2val(builder, left); right = var2val(builder, right);
-					if(left->getType()->isFloatingPointTy())
+					left = var2val(builder, left);
+					right = var2val(builder, right);
+					if (left->getType()->isFloatingPointTy())
 						retval = builder.CreateFCmpOLE(left, right, "fcmpleq");
 					else
 						retval = builder.CreateICmpSLE(left, right, "cmpleq");
 				}
-				else if(binop->getOp() == ">=")
+				else if (binop->getOp() == ">=")
 				{
-					left = var2val(builder, left); right = var2val(builder, right);
-					if(left->getType()->isFloatingPointTy())
+					left = var2val(builder, left);
+					right = var2val(builder, right);
+					if (left->getType()->isFloatingPointTy())
 						retval = builder.CreateFCmpOGE(left, right, "fcmpgeq");
 					else
 						retval = builder.CreateICmpSGE(left, right, "cmpgeq");
 				}
-				else if(binop->getOp() == "~=")
-				{				
-					if(left->getType()->isPointerTy())
+				else if (binop->getOp() == "~=")
+				{
+					if (left->getType()->isPointerTy())
 						left = builder.CreatePtrToInt(left, builder.getInt32Ty(), "left_ptr_to_int");
-					
-					if(right->getType()->isPointerTy())
+
+					if (right->getType()->isPointerTy())
 						right = builder.CreatePtrToInt(right, builder.getInt32Ty(), "right_ptr_to_int");
-					
-					if(left->getType()->isFloatingPointTy())
+
+					if (left->getType()->isFloatingPointTy())
 						retval = builder.CreateFCmpONE(left, right, "fcmpneq");
 					else
 						retval = builder.CreateICmpNE(left, right, "cmpneq");
 				}
+			}
 			
 			if(retval == nullptr)
 			{
@@ -790,6 +1029,11 @@ public:
 
 				llvm::ArrayRef<llvm::Value*> argRef(args);
 				retval = builder.CreateCall(function, argRef, "call");
+			}
+			else
+			{
+				auto* l = (left->getType()->isPointerTy() ? left->getType()->getPointerElementType() : left->getType());
+				matchTypes(type2str(l), type2str(right->getType()), binop->getRight().get());
 			}
 			
 			scope.exit();
@@ -814,6 +1058,11 @@ public:
 						break;
 						
 					case '-':
+						if(operand->getType() != getType(builder, "int")
+							&& operand->getType() != getType(builder, "float"))
+						{
+							error("Incompatible type given for negation. Expected int or float but got " + type2str(operand->getType()), op->getLocation());
+						}
 						retval = builder.CreateNeg(operand, "neg");
 						break;
 					
@@ -825,7 +1074,7 @@ public:
 							//retval = builder.CreatePointerCast(retval, retval->getType(), "@cast");
 						}
 						else
-							error("can not take the address of a literal", op->getLocation());
+							error("Can not take the address of a literal", op->getLocation());
 							//llvm::report_fatal_error("Can't take the address of a literal!");
 						break;
 						
@@ -851,7 +1100,14 @@ public:
 			llvm::Value* v = scope.find(var->getName());
 			if(!v)
 				v = module->getNamedGlobal(var->getName());
-			
+
+			if(!v)
+			{
+				v = module->getFunction(var->getName());
+				if(v)
+					v = builder.CreateBitCast(v, builder.getInt8PtrTy(), "function_ptr");
+			}
+
 			if(!v)
 			{
 				error("undefined variable '" + var->getName() + "'", var->getLocation());
@@ -909,16 +1165,16 @@ public:
 				
 				Variable* field = var->getField().get();
 				VariableDef* fieldDef = classdef->getMember(field->getName()).get();
-				
+
 				if(!fieldDef)
 				{
 					error("field '" + field->getName() + "' is not a member of class '" + name + "'", field->getLocation());
 					return nullptr;
 				}
-				
+
 				int fieldIndex = classdef->getMemberIdx(field->getName());
 				llvm::Type* fieldType = getType(builder, fieldDef->getType(), module);
-				
+
 				v = builder.CreateGEP(v, builder.getInt32(fieldIndex), field->getName() + "_gep");
 				v = builder.CreatePointerCast(v, fieldType->getPointerTo(), field->getName() + "_cast");
 				var = field;
@@ -1002,6 +1258,13 @@ public:
 					initial = generateIr(var->getInitial(), scope, builder, module);
 				
 				llvm::Type* type = getType(builder, var->getType(), module);
+
+				if(!type)
+				{
+					error("unknown variable type '" + var->getType() + "'", var->getLocation());
+					return nullptr;
+				}
+
 				if(initial && initial->getType() != type)
 				{
 					error("variable type mismatch, expected " + type2str(type) + " but got " + type2str(initial->getType()), var->getInitial()->getLocation());
@@ -1071,13 +1334,15 @@ public:
 			scope.exit();
 
 			llvm::Function* function = builder.GetInsertBlock()->getParent();
-			llvm::BasicBlock* if_true = llvm::BasicBlock::Create(context, "if_true", function);			
+			llvm::BasicBlock* if_true = llvm::BasicBlock::Create(context, "if_true", function);
 			llvm::BasicBlock* if_false = llvm::BasicBlock::Create(context, "if_false", function);
 			llvm::BasicBlock* if_continue = llvm::BasicBlock::Create(context, "if_continue", function);
 
 			llvm::Value* condition = generateIr(iffi->getHead(), scope, builder, module);
 			if(!condition) return nullptr;
-			
+
+			matchTypes("bool", type2str(condition->getType()), iffi);
+
 			auto branch = builder.CreateCondBr(var2val(builder, condition), if_true, if_false);
 			builder.SetInsertPoint(if_true);
 			generateIr(iffi->getBody(), scope, builder, module);
@@ -1105,7 +1370,8 @@ public:
 			
 			llvm::Value* condition = generateIr(whily->getHead(), scope, builder, module);
 			if(!condition) return nullptr;
-			
+			matchTypes("bool", type2str(condition->getType()), whily);
+
 			auto branch = builder.CreateCondBr(var2val(builder, condition), while_true, while_continue);
 			builder.SetInsertPoint(while_true);
 			generateIr(whily->getBody(), scope, builder, module);
@@ -1131,12 +1397,13 @@ public:
 			
 			llvm::Value* condition = generateIr(fory->getCond(), scope, builder, module);
 			if(!condition) return nullptr;
-			
+			matchTypes("bool", type2str(condition->getType()), fory);
+
 			auto branch = builder.CreateCondBr(var2val(builder, condition), for_true, for_continue);
 			
 			builder.SetInsertPoint(for_true);
 			generateIr(fory->getBody(), scope, builder, module);
-			generateIr(fory->getInc(), scope, builder, module);			
+			generateIr(fory->getInc(), scope, builder, module);
 			builder.CreateBr(for_cond);
 			
 			builder.SetInsertPoint(for_continue);
@@ -1218,7 +1485,7 @@ public:
 				{
 					if(!arg->getType()->canLosslesslyBitCastTo(type))
 						warning("converting '" + type2str(arg->getType()) 
-							+ "' to '" + type2str(type) + "' looses precision", cast->getLocation());
+							+ "' to '" + type2str(type) + "' loses precision", cast->getLocation());
 					
 					scope.exit();
 					return builder.CreateBitCast(arg, type, "bit_cast");
@@ -1303,10 +1570,10 @@ public:
 			
 			// Check types
 			{
-				if(!calleeFunc->isVarArg() && calleeFunc->getArgumentList().size() != args.size())
+				if(!calleeFunc->isVarArg() && calleeFunc->arg_size() != args.size())
 				{
 					error("argument count mismatch, required " 
-						+ std::to_string(calleeFunc->getArgumentList().size())
+						+ std::to_string(calleeFunc->arg_size())
 						+ " but given " + std::to_string(args.size()), call->getLocation());
 					return nullptr;
 				}
@@ -1356,7 +1623,7 @@ public:
 		// llvm::Linker::link them.
 		preprocess();
 		// dump();
-		
+
 		llvm::Module* module = new llvm::Module(where, context);
 		llvm::IRBuilder<> builder(context); 
 		
@@ -1392,9 +1659,29 @@ public:
 		
 		out.close();
 	}
+
+	std::string toLua() const
+	{
+		std::stringstream ss;
+		for(auto& k : TopLevel)
+		{
+			ss << k->toLua() << "\n";
+		}
+		return ss.str();
+	}
 	
 	void preprocess()
 	{
+		// First: Execute all meta blocks
+		{
+			MetaContext metaCtx;
+			for (auto& k : TopLevel)
+				if (auto meta = dynamic_cast<Meta*>(k.get()))
+				{
+					metaCtx.apply(*this, meta);
+				}
+		}
+
 		// Ugly?
 		static std::unordered_map<std::string, bool> visitedFiles;
 		for(size_t i = 0;  i < TopLevel.size(); i++)
@@ -1422,6 +1709,9 @@ public:
 					SourceName = filename->getValue();
 					
 					std::string filepath = (SourceName[0] != '/' ? SourcePath : "") + filename->getValue();
+					if(!fileExists(filepath))
+						filepath = Flags.includePath + "/" + SourceName; /// FIXME iterate through ; separated list!
+
 					if(call->getName() == "require")
 					{
 						RequiredLibraries.push_back(filepath + ".ll");
@@ -1480,32 +1770,19 @@ public:
 			}
 		}
 	}
-	
-	std::string type2str(llvm::Type* type)
+
+	void matchTypes(std::string typeA, std::string typeB, AST::Expr* expr)
 	{
-		std::string prefix;
-		while(type->isPointerTy())
+		if(typeA != typeB)
 		{
-			prefix += "@";
-			type = type->getPointerElementType();
+			error("Types do not match. Expected " + typeA + " but got " + typeB , expr->getLocation());
 		}
-		
-		if(llvm::isa<llvm::StructType>(type))
-		{
-			std::string name = static_cast<llvm::StructType*>(type)->getName();
-			return prefix + name;
-		}
-		
-		if(type->isIntegerTy(32))
-			return prefix + "int";
-		else if(type->isIntegerTy(1))
-			return prefix + "bool";
-		else if(type->isIntegerTy(8))
-			return prefix + "byte";
-		else if(type->isFloatTy())
-			return prefix + "float";
-		
-		return "unknown";
+	}
+
+	bool fileExists(const std::string& filename)
+	{
+		struct stat buffer;
+		return (stat(filename.c_str(), &buffer) == 0);
 	}
 
 	std::string normalizeName(const std::string& name)
@@ -1657,8 +1934,35 @@ public:
 		std::cerr << SourceName << ":" << loc.getLine() << ":" << loc.getCol() << ": warning: " << message << std::endl;
 		std::cerr << highlightSourceLine(getSourceLine(SourceName, loc.getLine()), loc);
 	}
+
+	template<typename Fn>
+	static void visit(AST::Expr* expr, Fn&& fn)
+	{
+		fn(expr);
+
+		if(auto node = dynamic_cast<AST::Function*>(expr))
+		{
+			for(auto& k : node->getBody())
+				visit(k.get(), fn);
+		}
+	}
+
+	template<typename Fn>
+	static void visit(AST::Module& module, Fn&& fn)
+	{
+		for(auto& e : module.TopLevel)
+			visit(e.get(), fn);
+	}
+
+	template<typename Fn>
+	void visit(Fn&& fn)
+	{
+		visit(*this, fn);
+	}
 };
 
+// ifndef SWIG
+#endif
 }
 
 // Some parse defs
@@ -1673,3 +1977,4 @@ struct FunctionBody
 	
 	~FunctionBody() { if(Body) delete Body; if(Args) delete Args; }
 };
+

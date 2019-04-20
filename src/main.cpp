@@ -11,13 +11,14 @@ int parse(FILE *fp, const AST::CompilationFlags& flags);
 int main(int argc, char** argv)
 {
 	AST::CompilationFlags flags;
+	flags.output = "a.out";
 	//std::cout << "l++ v0.1" << std::endl;
 	
 	if(argc < 2)
 		return 0;
 	
 	int opt;
-	while((opt = getopt(argc, argv, "mvhs:o:")) != -1)
+	while((opt = getopt(argc, argv, "mvhs:o:I:")) != -1)
 	{
 		switch (opt)
 			{
@@ -42,7 +43,10 @@ int main(int argc, char** argv)
 				std::cout << "l++ v" << VERSION_STRING << std::endl;
 				exit(EXIT_SUCCESS);
 				break;
-				
+
+		case 'I':
+				flags.includePath = optarg;
+		break;
 		default:
 				//usage(argv[0]);
 				exit(EXIT_FAILURE);
@@ -59,3 +63,4 @@ int main(int argc, char** argv)
 	parse(file, flags);
 	return 0;
 }
+

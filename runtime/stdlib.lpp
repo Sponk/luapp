@@ -1,0 +1,2 @@
+
+extern function exit(int v) -> void 
