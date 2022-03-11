@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.5)
 project(Lua++)
 
+set(CMAKE_CXX_STANDARD 17)
+
 set(BUILD_SHARED_LIBS ON)
 set(LUAPP_COMPILER ${CMAKE_BINARY_DIR}/l++)
 macro(add_lpp_executable target source)
@@ -36,7 +38,6 @@ add_definitions(${LLVM_DEFINITIONS})
 llvm_map_components_to_libnames(llvm_libs support core irreader bitreader bitwriter passes target option)
 message("-- ${llvm_libs}")
 target_link_libraries(l++ PRIVATE ${llvm_libs})
-add_definitions(-std=c++11)
 
 add_subdirectory(tools)
 add_subdirectory(runtime)

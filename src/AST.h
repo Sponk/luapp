@@ -1155,7 +1155,7 @@ public:
 					return nullptr;
 				}
 				
-				std::string name = structType->getName();
+				std::string name = structType->getName().str();
 				ClassDef* classdef = scope.Classes[name].get();
 				if(!classdef)
 				{
@@ -1633,7 +1633,7 @@ public:
 		//module->dump();
 				
 		std::error_code error;
-		llvm::raw_fd_ostream out(where, error, llvm::sys::fs::F_None);
+		llvm::raw_fd_ostream out(where, error, llvm::sys::fs::OF_None);
 		//WriteBitcodeToFile(module, out);
 		//out.flush();
 
@@ -1863,7 +1863,7 @@ public:
 		else
 		{
 			if(module)
-				retval = module->getTypeByName(type);
+				retval = llvm::StructType::getTypeByName(module->getContext(), type);
 		}
 		
 		if(!retval)

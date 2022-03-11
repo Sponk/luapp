@@ -14,7 +14,7 @@ static std::string type2str(llvm::Type* type)
 
 	if(llvm::isa<llvm::StructType>(type))
 	{
-		std::string name = static_cast<llvm::StructType*>(type)->getName();
+		std::string name = static_cast<llvm::StructType*>(type)->getName().str();
 		return prefix + name;
 	}
 

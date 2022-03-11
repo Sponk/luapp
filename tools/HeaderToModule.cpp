@@ -147,8 +147,8 @@ public:
 
 int main(int argc, const char **argv)
 {
-	CommonOptionsParser op(argc, argv, category);
-	ClangTool Tool(op.getCompilations(), op.getSourcePathList());
+	auto op = CommonOptionsParser::create(argc, argv, category);
+	ClangTool Tool(op->getCompilations(), op->getSourcePathList());
 
 	int result = Tool.run(newFrontendActionFactory<ExampleFrontendAction>().get());
 	return result;
